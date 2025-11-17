@@ -14,7 +14,7 @@ async def root():
 # Config from env
 GROQ_KEY = os.getenv("GROQ_KEY", "")
 GROQ_ENDPOINT = os.getenv("GROQ_ENDPOINT", "https://api.groq.com/openai/v1/chat/completions")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "mixtral-8x7b")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
 
 JSONBIN_MASTER_KEY = os.getenv("JSONBIN_MASTER_KEY", "")
 MAIN_BIN_URL = os.getenv("MAIN_BIN_URL", "")        # e.g. https://api.jsonbin.io/v3/b/69195a32ae596e708f5c1946
