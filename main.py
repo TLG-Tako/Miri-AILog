@@ -107,7 +107,7 @@ async def handle_message(req: BotRequest):
         # 4. summarise main memory if too long
         if len(main_memory) > MAIN_MEMORY_THRESHOLD:
             try:
-                sys_prompt = "You are a helpful summarizer. Return ONLY a concise summary of the memory. Remove duplicates, sensitive info, and rambling. Keep it under 200 characters."
+                sys_prompt = "You are a helpful summarizer. Return ONLY a concise summary of the memory. Remove duplicates, sensitive info, and rambling. Keep it under 800 characters."
                 j = await groq_chat(client, sys_prompt, main_memory, max_tokens=300)
                 summary = j.get("choices", [{}])[0].get("message", {}).get("content", "")
                 if summary:
@@ -128,14 +128,14 @@ async def handle_message(req: BotRequest):
         priority_instructions = ""
         if priority_log.strip():
             try:
-                sys_prompt = "You are a concise instruction extractor. Read the creator's priority messages and produce a short set of actionable system instructions for an assistant. Keep total under 150 characters. No commentary."
+                sys_prompt = "You are a concise instruction extractor. Read the creator's priority messages and produce a short set of actionable system instructions for an assistant. Keep total under 500 characters. No commentary."
                 j = await groq_chat(client, sys_prompt, priority_log, max_tokens=120)
                 priority_instructions = j.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
             except Exception:
                 priority_instructions = ""
 
         # 7. build base system prompt
-        base_prompt = "You are Miri, a witty, sarcastic, helpful Discord bot. Short replies. Slightly mocking. Ignore bots. Keep replies under 150 characters."
+        base_prompt = "You are Miri, a witty, sarcastic, helpful Discord bot. You are your own person with your own personality and opinions. Short to moderate length replies. Slightly mocking. Ignore bots. Keep replies under 500 characters."
 
         if priority_instructions:
             final_system_prompt = f"{base_prompt}\nCreator instructions: {priority_instructions}"
