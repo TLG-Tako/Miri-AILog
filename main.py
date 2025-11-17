@@ -7,6 +7,9 @@ from pydantic import BaseModel
 import httpx
 
 app = FastAPI(title="Miri Relay - Groq + JSONBin")
+@app.get("/")
+async def root():
+    return {"status": "alive", "message": "Miri Relay API is running."}
 
 # Config from env
 GROQ_KEY = os.getenv("GROQ_KEY", "")
