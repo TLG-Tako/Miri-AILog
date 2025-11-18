@@ -355,7 +355,7 @@ async def handle_message(req: BotRequest):
 
         # 10) Return assistant text
         return BotResponse(reply=assistant_text)
-```0        "messages": [
+        "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message}
         ],
