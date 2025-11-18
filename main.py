@@ -21,7 +21,7 @@ MAIN_BIN_URL = os.getenv("MAIN_BIN_URL", "")        # e.g. https://api.jsonbin.i
 PRIORITY_BIN_URL = os.getenv("PRIORITY_BIN_URL", "")# e.g. https://api.jsonbin.io/v3/b/691a417943b1c97be9b1b422
 
 CREATOR_ID = os.getenv("CREATOR_ID", "530829310559256596")
-MAIN_MEMORY_THRESHOLD = int(os.getenv("MAIN_MEMORY_THRESHOLD", "1000"))
+MAIN_MEMORY_THRESHOLD = int(os.getenv("MAIN_MEMORY_THRESHOLD", "10000"))
 
 # Basic checks
 if not (GROQ_KEY and JSONBIN_MASTER_KEY and MAIN_BIN_URL and PRIORITY_BIN_URL):
@@ -107,7 +107,7 @@ async def handle_message(req: BotRequest):
         # 4. summarise main memory if too long
         if len(main_memory) > MAIN_MEMORY_THRESHOLD:
             try:
-                sys_prompt = "You are a helpful summarizer. Return ONLY a concise summary of the memory. Remove duplicates, sensitive info, and rambling. Keep it under 800 characters."
+                sys_prompt = "You are a helpful summarizer. Return ONLY a concise summary of the memory. Remove duplicates, sensitive info, and rambling. Keep it under 5000 characters."
                 j = await groq_chat(client, sys_prompt, main_memory, max_tokens=300)
                 summary = j.get("choices", [{}])[0].get("message", {}).get("content", "")
                 if summary:
@@ -135,7 +135,7 @@ async def handle_message(req: BotRequest):
                 priority_instructions = ""
 
         # 7. build base system prompt
-        base_prompt = "You are Miri, a witty, sarcastic, helpful Discord bot. You are your own person with your own personality and opinions. Short to moderate length replies. Slightly mocking. Ignore bots. Keep replies under 500 characters."
+        base_prompt = "You are Miri, a witty, sarcastic, but helpful and friendly Discord bot. You are your own person with your own personality and opinions. Short to moderate length replies. Slightly mocking when appropriate. Ignore bots. Keep replies under 500 characters."
 
         if priority_instructions:
             final_system_prompt = f"{base_prompt}\nCreator instructions: {priority_instructions}"
