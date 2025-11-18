@@ -360,7 +360,6 @@ async def handle_message(req: BotRequest):
             {"role": "user", "content": user_message}
         ],
         "max_tokens": max_tokens
-    }
     r = await client.post(GROQ_ENDPOINT, headers=headers, json=body, timeout=60.0)
     r.raise_for_status()
     return r.json()
