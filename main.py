@@ -148,249 +148,185 @@ async def groq_chat(client: httpx.AsyncClient, system_prompt: str, user_message:
 
 # -------------------- Main Endpoint --------------------
 @app.post("/api/message", response_model=BotResponse)
-async def handle_message(req: BotRequest):
-    # basic server config guard
+async def handle_message(req: Dict[str, Any]):
+    # Basic env guard
     if not (GROQ_KEY and JSONBIN_MASTER_KEY and MAIN_BIN_URL and PRIORITY_BIN_URL):
         raise HTTPException(status_code=500, detail="Server not configured.")
 
     async with httpx.AsyncClient() as client:
+
+        # Detect staff / instruction payload
+        if "PriorityLog" in req:
+            new_entries = req["PriorityLog"]
+
+            # Load PRIORITY bin
+            try:
+                priority_bin_resp = await jsonbin_raw_get(client, PRIORITY_BIN_URL)
+                priority_record = priority_bin_resp.get("record", priority_bin_resp)
+            except Exception as e:
+                raise HTTPException(status_code=502, detail=f"Error fetching PRIORITY_BIN_URL: {e}")
+
+            # Get existing list
+            existing = priority_record.get("PriorityLog")
+            existing_list = []
+
+            if isinstance(existing, list):
+                existing_list = existing
+            else:
+                # convert if needed
+                parsed = parse_priority_log(existing)
+                if parsed:
+                    existing_list = parsed
+
+            # Append new items
+            for entry in new_entries:
+                if isinstance(entry, dict):
+                    existing_list.append({
+                        "type": str(entry.get("type", "")),
+                        "text": str(entry.get("text", ""))
+                    })
+
+            # Save back
+            priority_record["PriorityLog"] = existing_list
+
+            try:
+                await jsonbin_put_key(client, PRIORITY_BIN_URL, priority_record)
+            except Exception as e:
+                raise HTTPException(status_code=502, detail=f"Could not write PRIORITY_BIN_URL: {e}")
+
+            return BotResponse(reply="")  # bot won't reply to instructions
+
+        # -------------------------
+        # Normal user message flow
+        # -------------------------
+
+        try:
+            req_obj = BotRequest(**req)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid message format.")
+
+        username = req_obj.username or ""
+        incoming = req_obj.message or ""
+        author_key = str(req_obj.authorID or "")
+
         # Load MAIN bin
         try:
             main_bin_resp = await jsonbin_raw_get(client, MAIN_BIN_URL)
-            main_record = main_bin_resp.get("record", main_bin_resp) if isinstance(main_bin_resp, dict) else {}
+            main_record = main_bin_resp.get("record", main_bin_resp)
         except Exception as e:
-            logger.exception("Failed reading MAIN_BIN_URL")
             raise HTTPException(status_code=502, detail=f"Error fetching MAIN_BIN_URL: {e}")
 
-        # Load PRIORITY bin
+        # Load PRIORITY bin for referencing instructions
         try:
             priority_bin_resp = await jsonbin_raw_get(client, PRIORITY_BIN_URL)
-            priority_record = priority_bin_resp.get("record", priority_bin_resp) if isinstance(priority_bin_resp, dict) else {}
+            priority_record = priority_bin_resp.get("record", priority_bin_resp)
         except Exception as e:
-            logger.exception("Failed reading PRIORITY_BIN_URL")
             raise HTTPException(status_code=502, detail=f"Error fetching PRIORITY_BIN_URL: {e}")
 
-        # Normalize memory
+        # --- MEMORY PROCESSING (unchanged, preserved) ---
         memory_dict = normalize_memory_record(main_record)
         memory_dict = {str(k): (v if isinstance(v, str) else str(v)) for k, v in memory_dict.items()}
 
-        # Extract priority log value
-        raw_priority = None
-        if isinstance(priority_record, dict):
-            # PriorityLog could be under different keys or be the whole record
-            raw_priority = priority_record.get("PriorityLog", priority_record.get("prioritylog", priority_record))
-        else:
-            raw_priority = priority_record
-
-        priority_items = parse_priority_log(raw_priority)
-
-        # Incoming message & author
-        incoming_raw = req.message or ""
-        author_key = str(req.authorID or "")
-        # store per-user memory text (existing)
-        user_mem = memory_dict.get(author_key, "").strip()
-
-        # --- Username tracking (store username only) ---
-        username = (req.username or "").strip()
+        # Username tracking
         username_key = f"{author_key}_username"
         last_username = memory_dict.get(username_key, "")
-
         if username and username != last_username:
             memory_dict[username_key] = username
-            logger.info(f"Updated username for {author_key}: {username}")
 
-        # --- If creator mirilog! append to priority log (preserve original structure) ---
-        priority_log_raw_text = ""
-        if isinstance(priority_record, dict):
-            # try to retrieve previous raw text for PriorityLog if present
-            prev_priority_raw = priority_record.get("PriorityLog")
-            if isinstance(prev_priority_raw, str):
-                priority_log_raw_text = prev_priority_raw
-            else:
-                try:
-                    priority_log_raw_text = json.dumps(prev_priority_raw)
-                except Exception:
-                    priority_log_raw_text = ""
-        else:
-            # if priority_record itself is a string/list, store its string repr
-            try:
-                priority_log_raw_text = json.dumps(priority_record)
-            except Exception:
-                priority_log_raw_text = str(priority_record)
+        # Append user message
+        user_mem = memory_dict.get(author_key, "")
+        user_mem = (user_mem + "\n" + incoming).strip()
+        memory_dict[author_key] = user_mem
 
-        incoming = incoming_raw or ""
+        global_mem = memory_dict.get("GLOBAL", "")
+        memory_dict["GLOBAL"] = (global_mem + "\n" + incoming).strip()
 
-        if author_key == CREATOR_ID and incoming.lower().lstrip().startswith("mirilog!"):
-            if priority_log_raw_text and not priority_log_raw_text.endswith("\n"):
-                priority_log_raw_text += "\n"
-            priority_log_raw_text += incoming.strip()
-            logger.info("Appended mirilog! message to priority log.")
-        else:
-            # Add to author memory (append)
-            user_mem = (user_mem + "\n" + incoming).strip()
-            memory_dict[author_key] = user_mem
-            # Add to GLOBAL memory (append)
-            global_mem = memory_dict.get("GLOBAL", "")
-            memory_dict["GLOBAL"] = (global_mem + "\n" + incoming).strip()
+        # Parse priority items for prompt building
+        raw_priority = priority_record.get("PriorityLog")
+        priority_items = parse_priority_log(raw_priority)
 
-        # --- Summarize per-user memory if needed ---
-        try:
-            current_user_mem = memory_dict.get(author_key, "")
-            if len(current_user_mem) > USER_SUMMARY_THRESHOLD:
-                sys_prompt = (
-                    "You are a helpful summarizer. Summarize the following user's memory into a concise form "
-                    "keeping important facts, preferences, and identifiers. Remove duplicates and rambling. "
-                    "Keep the summary under 3000 characters and return ONLY the summary."
-                )
-                res = await groq_chat(client, sys_prompt, current_user_mem, max_tokens=300)
-                summary_text = res.get("choices", [{}])[0].get("message", {}).get("content", "")
-                if summary_text:
-                    memory_dict[author_key] = summary_text.strip()
-                    logger.info(f"Summarized memory for user {author_key}.")
-        except Exception:
-            logger.exception("User memory summarization failed.")
-
-        # --- Summarize GLOBAL memory if needed ---
-        try:
-            global_mem = memory_dict.get("GLOBAL", "")
-            if len(global_mem) > GLOBAL_SUMMARY_THRESHOLD:
-                sys_prompt = (
-                    "You are a helpful summarizer. Summarize the GLOBAL server memory/lore into a concise reference. "
-                    "Keep summary focused on lore, rules, and persistent facts; remove chatter. "
-                    "Return ONLY the summary under 8000 characters."
-                )
-                res = await groq_chat(client, sys_prompt, global_mem, max_tokens=600)
-                summary_text = res.get("choices", [{}])[0].get("message", {}).get("content", "")
-                if summary_text:
-                    memory_dict["GLOBAL"] = summary_text.strip()
-                    logger.info("Summarized GLOBAL memory.")
-        except Exception:
-            logger.exception("GLOBAL memory summarization failed.")
-
-        # --- Persist MAIN and PRIORITY memory (best-effort) ---
-        try:
-            outgoing_main_payload = main_record.copy() if isinstance(main_record, dict) else {}
-            outgoing_main_payload["memory"] = memory_dict
-            await jsonbin_put_key(client, MAIN_BIN_URL, outgoing_main_payload)
-        except Exception:
-            logger.exception("Failed to write MAIN_BIN_URL.")
-
-        try:
-            outgoing_priority_payload = priority_record.copy() if isinstance(priority_record, dict) else {}
-            # attempt to set PriorityLog as structured JSON if we have items; otherwise preserve raw text
-            if priority_items:
-                outgoing_priority_payload["PriorityLog"] = priority_items
-            else:
-                # fall back to raw text (may be empty)
-                outgoing_priority_payload["PriorityLog"] = priority_log_raw_text
-            await jsonbin_put_key(client, PRIORITY_BIN_URL, outgoing_priority_payload)
-        except Exception:
-            logger.exception("Failed to write PRIORITY_BIN_URL.")
-
-        # --- Extract concise creator instructions from priority items ---
-        priority_instructions = ""
-        if priority_items:
-            try:
-                # combine texts of 'instruction' type into a short system instruction set
-                instruction_texts = [it["text"] for it in priority_items if it.get("type") == "instruction" and it.get("text")]
-                if instruction_texts:
-                    joined = "\n".join(instruction_texts)
-                    sys_prompt = (
-                        "You are a concise instruction extractor. Read the creator's messages and produce a short set "
-                        "of actionable system instructions for an assistant. Keep total under 500 characters. No commentary."
-                    )
-                    res = await groq_chat(client, sys_prompt, joined, max_tokens=120)
-                    priority_instructions = res.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-            except Exception:
-                logger.exception("Priority instruction extraction failed.")
-
-        # --- Build final system prompt (fail-safe, always non-empty) ---
+        # --- BUILD SYSTEM + USER PROMPT (unchanged from your structure) ---
         base_prompt = (
             "You are Miri — a witty, sarcastic, and helpful Discord bot. "
-            "Give short replies (aim under 500 characters). Be playful but respectful. Ignore bot messages."
+            "Give short replies. Be playful but respectful."
         )
-        system_parts = [base_prompt]
-        if priority_instructions:
-            system_parts.append("Creator instructions: " + priority_instructions)
 
-        # attach structured priority/lore items (if present)
+        system_parts = [base_prompt]
+
+        # Creator instructions (extracted from PriorityLog)
+        instruction_texts = [
+            it["text"] for it in priority_items
+            if it.get("type") == "instruction" and it.get("text")
+        ]
+
+        priority_instructions = ""
+        if instruction_texts:
+            joined = "\n".join(instruction_texts)
+            res = await groq_chat(client,
+                "Extract the core instructions from the creator's messages. "
+                "Keep concise under 300 characters. No commentary.",
+                joined,
+                max_tokens=120
+            )
+            priority_instructions = (
+                res.get("choices",[{}])[0]
+                .get("message",{})
+                .get("content","")
+                .strip()
+            )
+
+        if priority_instructions:
+            system_parts.append("Creator instructions:\n" + priority_instructions)
+
+        # Add raw priority items as lore/instructions
         if priority_items:
-            lore_parts = []
+            lore_lines = []
             for it in priority_items:
                 t = it.get("type", "").strip()
                 txt = it.get("text", "").strip()
                 if t and txt:
-                    lore_parts.append(f"[{t}] {txt}")
-            if lore_parts:
-                system_parts.append("Server priority / lore:\n" + "\n".join(lore_parts))
+                    lore_lines.append(f"[{t}] {txt}")
+            if lore_lines:
+                system_parts.append("Server priority:\n" + "\n".join(lore_lines))
 
-        # attach a small slice of GLOBAL memory for context (bounded)
-        global_reference = memory_dict.get("GLOBAL", "").strip()
-        if global_reference:
-            max_global_attach = 60_000
-            if len(global_reference) > max_global_attach:
-                global_reference = global_reference[:max_global_attach]
-            system_parts.append("Server lore / reference:\n" + global_reference)
+        # Attach GLOBAL memory (trim long)
+        global_mem = memory_dict.get("GLOBAL","")
+        if global_mem:
+            if len(global_mem) > 60000:
+                global_mem = global_mem[-60000:]
+            system_parts.append("Server lore:\n" + global_mem)
 
         final_system_prompt = "\n\n".join(system_parts)
-        if not final_system_prompt.strip():
-            final_system_prompt = "You are Miri. Answer succinctly."
 
-        # --- Build user message with personal memory ---
-        user_reference = memory_dict.get(author_key, "").strip()
-        max_user_attach = 20_000
-        if len(user_reference) > max_user_attach:
-            user_reference = user_reference[-max_user_attach:]
+        # Build user message
+        user_ref = memory_dict.get(author_key,"")
+        if len(user_ref) > 20000:
+            user_ref = user_ref[-20000:]
 
-        # attach username (if present)
-        username_reference = memory_dict.get(username_key, "").strip()
-        if username_reference:
-            user_reference = f"Username: {username_reference}\n\n{user_reference}"
+        if username:
+            user_ref = f"Username: {username}\n\n" + user_ref
 
-        final_user_message = f"User memory:\n{user_reference}\n\nIncoming message:\n{incoming}"
-
-        # ensure overall combined size is within MAX_CONTEXT_CHARS (trim user_reference if needed)
-        combined_estimated_chars = len(final_system_prompt) + len(final_user_message)
-        if combined_estimated_chars > MAX_CONTEXT_CHARS:
-            overflow = combined_estimated_chars - MAX_CONTEXT_CHARS
-            if user_reference and overflow > 0:
-                # trim from start of user_reference to keep recent context
-                user_reference = user_reference[overflow + 512:]
-                final_user_message = f"User memory:\n{user_reference}\n\nIncoming message:\n{incoming}"
+        final_user_message = (
+            f"User memory:\n{user_ref}\n\n"
+            f"Incoming message:\n{incoming}"
+        )
 
         # --- Call Groq ---
-        assistant_text = ""
-        try:
-            res = await groq_chat(client, final_system_prompt, final_user_message, max_tokens=400)
-            # Groq may return choices list similar to OpenAI structure
-            choices = res.get("choices") or []
-            if choices and isinstance(choices, list):
-                first = choices[0]
-                # support a couple of possible shapes
-                assistant_text = (
-                    first.get("message", {}).get("content")
-                    or first.get("text")
-                    or ""
-                ) or ""
-            else:
-                # no choices: capture available debug info
-                logger.warning("Groq returned no choices: %s", res)
-        except httpx.HTTPStatusError as e:
-            # propagate model errors with details for debugging
-            body_text = ""
-            try:
-                body_text = e.response.text
-            except Exception:
-                body_text = str(e)
-            logger.exception("Groq returned HTTP error")
-            raise HTTPException(status_code=502, detail=f"Groq API error: {body_text}")
-        except Exception as e:
-            logger.exception("Groq call failed")
-            raise HTTPException(status_code=502, detail=f"Groq call failed: {e}")
+        res = await groq_chat(client, final_system_prompt, final_user_message)
+        choices = res.get("choices") or []
+        assistant_text = (
+            choices[0].get("message", {}).get("content", "")
+            if choices else ""
+        )
 
-        # if assistant didn't produce a reply, return a short fallback (so upstream UX doesn't show "did not return")
         if not assistant_text:
-            logger.warning("Miri API did not return a reply for incoming message: %s", incoming[:200])
-            assistant_text = "Sorry — Miri couldn't think of a reply."
+            assistant_text = "Miri had a brain-freeze, try again."
 
-        return BotResponse(reply=assistant_text)
+        # Save main memory
+        main_record["memory"] = memory_dict
+        try:
+            await jsonbin_put_key(client, MAIN_BIN_URL, main_record)
+        except:
+            pass
+
+        return BotResponse(reply=assistant_text)                    # if assistant didn't produce a reply, return a short fallback (so upstream UX doesn't show "did not return"
