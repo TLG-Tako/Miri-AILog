@@ -58,7 +58,6 @@ async def jsonbin_put_key(client: httpx.AsyncClient, url: str, payload: Dict[str
 
 # -------------------- Memory helpers --------------------
 def normalize_memory_record(raw_record: Dict[str, Any]) -> Dict[str, str]:
-    """Return a dict of string->string memory entries, robust to different saved shapes."""
     if not raw_record:
         return {}
     mem = raw_record.get("memory") or raw_record.get("Memory") or raw_record.get("memory_dict")
@@ -76,14 +75,6 @@ def normalize_memory_record(raw_record: Dict[str, Any]) -> Dict[str, str]:
 
 # -------------------- PriorityLog parsing --------------------
 def parse_priority_log(raw_priority: Any) -> List[Dict[str, str]]:
-    """
-    Accept various shapes for PriorityLog:
-      - already a list of dicts -> return as-is (strings coerced)
-      - a JSON string -> json.loads
-      - a Python repr-like string -> ast.literal_eval
-      - attempt a best-effort replacement (single->double quotes) then json.loads
-    Fallback: return empty list.
-    """
     if raw_priority is None:
         return []
     # if it's already a list of objs:
